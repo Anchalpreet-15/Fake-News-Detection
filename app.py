@@ -1,16 +1,24 @@
-# app_complete_with_analytics.py - Enhanced with Analytics & Visualizations
+# app_complete_with_analytics.py - Enhanced with Analytics & Image Upload
 # Multi-Level Verification with Charts and Statistics
 # Created by: Anchalpreet Singh Bhatia (72310132)
 
 from flask import Flask, render_template_string, request, redirect, url_for, session, flash
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
 import sqlite3
 from datetime import datetime
 import random
 import json
+import os # Imported for file path handling
 
 app = Flask(__name__)
 app.secret_key = 'your-secret-key-change-this-in-production'
+app.config['UPLOAD_FOLDER'] = 'static/uploads' # Define the upload directory
+app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg', 'gif'}
+
+def allowed_file(filename):
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
 
 def init_db():
     """Initialize database with users and articles tables and default users."""
@@ -33,15 +41,16 @@ def init_db():
         submitted_at TEXT,
         ml_prediction TEXT,
         ml_confidence REAL,
-        status TEXT DEFAULT 'pending',          -- pending, reviewed, admin_reviewed
+        status TEXT DEFAULT 'pending',
         reviewed_by INTEGER,
-        final_verdict TEXT,                     -- 'Real' or 'Fake' (set by Reviewer/Admin)
+        final_verdict TEXT,
         reviewed_at TEXT,
         admin_verified INTEGER DEFAULT 0,
         admin_verified_by INTEGER,
         admin_verified_at TEXT,
-        needs_admin_review INTEGER DEFAULT 0,   -- Flag set by Reviewer
+        needs_admin_review INTEGER DEFAULT 0,
         reliable_source_json TEXT,
+        image_path TEXT,  -- <--- NEW COLUMN ADDED
         FOREIGN KEY (submitted_by) REFERENCES users(id),
         FOREIGN KEY (reviewed_by) REFERENCES users(id),
         FOREIGN KEY (admin_verified_by) REFERENCES users(id)
@@ -49,7 +58,6 @@ def init_db():
         
     c.execute("SELECT COUNT(*) FROM users")
     if c.fetchone()[0] == 0:
-        # Generate hashes once for the default users
         default_users = [
             ('Admin User', 'admin@system.com', generate_password_hash('admin123'), 'admin'),
             ('Reviewer Priya', 'reviewer@system.com', generate_password_hash('reviewer123'), 'reviewer'),
@@ -136,7 +144,7 @@ def classify_article(text, title):
         
     return prediction, min(confidence, 0.95), get_reliable_sources(title)
 
-# Enhanced HTML with Chart.js for visualizations (Background color changed here)
+# Enhanced HTML with Chart.js for visualizations (Background color is the soft light gradient)
 BASE_HTML = '''<!DOCTYPE html><html><head>
     <title>Fake News Detection System</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -152,9 +160,7 @@ BASE_HTML = '''<!DOCTYPE html><html><head>
         }
         body {
             font-family: 'Inter', sans-serif;
-            /* --- REVISED BACKGROUND COLOR --- */
             background: linear-gradient(135deg, #e0f7fa 0%, #f1f8e9 100%); 
-            /* -------------------------------- */
             min-height: 100vh; position: relative; overflow-x: hidden;
         }
         @keyframes fadeInUp { from { opacity: 0; transform: translateY(40px); } to { opacity: 1; transform: translateY(0); } }
@@ -237,6 +243,14 @@ BASE_HTML = '''<!DOCTYPE html><html><head>
             background: linear-gradient(135deg, #dbeafe, #bfdbfe); padding: 24px;
             border-radius: 20px; margin-top: 30px; font-size: 13px; border: 2px solid var(--primary);
         }
+        .article-image {
+            max-width: 100%;
+            height: auto;
+            border-radius: 12px;
+            margin-bottom: 15px;
+            border: 1px solid var(--gray-200);
+            box-shadow: 0 4px 10px rgba(0,0,0,0.05);
+        }
         @media (max-width: 768px) {
             .navbar { flex-direction: column; gap: 18px; }
             .grid { grid-template-columns: 1fr; }
@@ -318,13 +332,38 @@ def user_dashboard():
         title = request.form['title']
         text = request.form['text']
         prediction, confidence, sources_json = classify_article(text, title)
+        
+        image_path = None
+        # Image Upload Handling
+        if 'article_image' in request.files:
+            file = request.files['article_image']
+            if file.filename != '' and allowed_file(file.filename):
+                # Secure filename and save to server
+                filename = secure_filename(file.filename)
+                
+                # Prepend timestamp to filename to prevent collisions
+                timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+                unique_filename = f"{timestamp}_{filename}"
+                
+                file_path_full = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+                
+                # Ensure the upload directory exists before saving
+                os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+                file.save(file_path_full)
+                
+                # Store the web-accessible URL in the database
+                image_path = url_for('static', filename=f'uploads/{unique_filename}')
+
         conn = sqlite3.connect('fake_news_detection.db')
         c = conn.cursor()
-        c.execute('''INSERT INTO articles (title, text, submitted_by, submitted_at, ml_prediction, ml_confidence, status, reliable_source_json) 
-                     VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)''',
-                   (title, text, session['user_id'], datetime.now().isoformat(), prediction, confidence, sources_json))
+        
+        # Insert with image_path
+        c.execute('''INSERT INTO articles (title, text, submitted_by, submitted_at, ml_prediction, ml_confidence, status, reliable_source_json, image_path) 
+                     VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)''',
+                   (title, text, session['user_id'], datetime.now().isoformat(), prediction, confidence, sources_json, image_path))
         conn.commit()
         conn.close()
+        
         flash(f'✨ Article submitted! AI predicts: {prediction} ({confidence*100:.1f}% confidence)')
         return redirect(url_for('user_dashboard'))
 
@@ -365,7 +404,7 @@ def user_dashboard():
             a['parsed_sources'] = []
         articles_with_sources.append(a)
 
-    # HTML for User Dashboard (including analytics charts)
+    # HTML for User Dashboard (Form now includes enctype="multipart/form-data")
     html = BASE_HTML.replace('{% block content %}{% endblock %}', '''
     <div class="navbar">
         <h1>User Dashboard</h1>
@@ -425,8 +464,8 @@ def user_dashboard():
 
         <div class="grid">
             <div class="card">
-                <h2>📝 Submit Article</h2>
-                <form method="POST">
+                <h2>📝 Submit Article (with Image Upload)</h2>
+                <form method="POST" enctype="multipart/form-data">
                     <div class="form-group">
                         <label>Article Title</label>
                         <input type="text" name="title" required>
@@ -434,6 +473,10 @@ def user_dashboard():
                     <div class="form-group">
                         <label>Article Text</label>
                         <textarea name="text" rows="8" required></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>🖼️ Upload Header Image (Optional)</label>
+                        <input type="file" name="article_image" accept="image/*">
                     </div>
                     <button type="submit" class="btn" style="width:100%;justify-content:center;">🔍 Analyze</button>
                 </form>
@@ -445,6 +488,9 @@ def user_dashboard():
                         {% for article in articles_with_sources %}
                             <div class="article-item">
                                 <h3>{{ article.title }}</h3>
+                                {% if article.image_path %}
+                                    <img src="{{ article.image_path }}" class="article-image" alt="Article Image">
+                                {% endif %}
                                 <div style="margin:10px 0;">
                                     <span class="badge {% if article.ml_prediction == 'Fake' %}badge-fake{% else %}badge-real{% endif %}">
                                         🤖 ML: {{ article.ml_prediction }} ({{ "%.0f"|format(article.ml_confidence * 100) }}%)
@@ -601,7 +647,7 @@ def reviewer_dashboard():
         except: a['parsed_sources'] = []
         reviewed_by_reviewer_with_sources.append(a)
 
-    # HTML for Reviewer Dashboard (including analytics charts)
+    # HTML for Reviewer Dashboard (Display uploaded image if available)
     html = BASE_HTML.replace('{% block content %}{% endblock %}', '''
     <div class="navbar">
         <h1>Reviewer Dashboard</h1>
@@ -667,6 +713,9 @@ def reviewer_dashboard():
                 {% for article in pending_articles_with_sources %}
                     <div class="article-item" style="border-color:var(--warning);">
                         <h3>{{ article.title }} <span style="font-size:12px;color:var(--gray-600);">by {{ article.submitted_by_name }} on {{ article.submitted_at.split('T')[0] }}</span></h3>
+                        {% if article.image_path %}
+                            <img src="{{ url_for('static', filename='uploads/' ~ article.image_path.split('/')[-1]) }}" class="article-image" alt="Article Image">
+                        {% endif %}
                         <p style="color:var(--gray-700); font-size:14px; margin-top:10px;">{{ article.text[:200] }}...</p>
                         <div style="margin:10px 0;">
                             <span class="badge {% if article.ml_prediction == 'Fake' %}badge-fake{% else %}badge-real{% endif %}">
@@ -954,6 +1003,9 @@ def admin_dashboard():
                                 Submitted by: {{ article.submitted_by_name }} | Reviewed by: {{ article.reviewed_by_name }}
                             </span>
                         </h3>
+                        {% if article.image_path %}
+                            <img src="{{ url_for('static', filename='uploads/' ~ article.image_path.split('/')[-1]) }}" class="article-image" alt="Article Image">
+                        {% endif %}
                         <p style="color:var(--gray-700); font-size:14px; margin-top:10px;">{{ article.text[:200] }}...</p>
                         <div style="margin:10px 0;">
                             <span class="badge {% if article.ml_prediction == 'Fake' %}badge-fake{% else %}badge-real{% endif %}">
