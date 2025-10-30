@@ -1,6 +1,5 @@
 # app_complete_with_analytics.py - Enhanced with Analytics & Image Upload
-# Multi-Level Verification with Charts and Statistics
-# Created by: Anchalpreet Singh Bhatia (72310132)
+
 
 from flask import Flask, render_template_string, request, redirect, url_for, session, flash
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -9,7 +8,8 @@ import sqlite3
 from datetime import datetime
 import random
 import json
-import os # Imported for file path handling
+import os
+# Imported for file path handling
 
 app = Flask(__name__)
 app.secret_key = 'your-secret-key-change-this-in-production'
